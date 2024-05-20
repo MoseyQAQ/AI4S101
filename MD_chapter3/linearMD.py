@@ -43,7 +43,7 @@ class Atom:
         self.filename = filename
         
         # 读取xyz文件
-        self.number, self.box, self.coords, self.mass = self.parseXyzFile(self.filename)
+        self.number, self.box, self.coords, self.mass, self.boxInv = self.parseXyzFile(self.filename)
 
         # 初始化原子的力、速度、势能、动能
         self.forces = np.zeros((self.number, 3))
@@ -51,8 +51,11 @@ class Atom:
         self.pe = 0.0
         self.ke = self.getKineticEnergy()
 
-        self.MN: int = 1000
+        # Neighbor list parameters
+        self.MaxNeighbor: int = 1000
         self.cutoffNeighbor: float = 10.0
+        self.NeighborNumber: np.ndarray = np.zeros(self.number, dtype=int)
+        self.NeighborList: np.ndarray = np.zeros((self.number, self.MaxNeighbor), dtype=int)
         
     
     def parseXyzFile(self, filename: str) -> tuple[int, np.ndarray, np.ndarray, np.ndarray]:
@@ -60,7 +63,7 @@ class Atom:
         读取xyz文件，返回原子数，盒子大小，原子坐标，原子质量
 
         :param filename: xyz文件名
-        :returns: 原子数，盒子大小，原子坐标，原子质量
+        :returns: 原子数，盒子大小，原子坐标，原子质量, 盒子逆矩阵
         '''
 
         with open(filename, 'r') as f:
@@ -73,7 +76,7 @@ class Atom:
 
             # 读取box的大小
             box = [float(x) for x in f.readline().split()]
-            box = np.array(box)
+            box = np.array(box).reshape((3,3))
 
             # 遍历读取原子坐标和质量
             for i in range(number):
@@ -81,7 +84,10 @@ class Atom:
                 coords[i] = [float(line[1]), float(line[2]), float(line[3])]
                 mass[i] = float(line[4])
 
-        return number, box, coords, mass
+            # 求box的逆矩阵
+            boxInv = np.linalg.inv(box)
+
+        return number, box, coords, mass, boxInv
     
     def getKineticEnergy(self) -> float:
         '''
@@ -132,7 +138,7 @@ class Atom:
         # 调整速度
         self.velocities *= scalingFactor
     
-    def applyMic(self, rij: np.ndarray) -> None:
+    def applyMic(self, rij: np.ndarray) -> np.ndarray:
         '''
         对于给定的两个原子间的距离，应用最小镜像约定
 
@@ -140,12 +146,17 @@ class Atom:
         :returns: None
         '''
 
-        # 对于每一个维度，如果距离大于盒子的一半，就减去盒子的大小，如果距离小于盒子的一半，就加上盒子的大小
+        # rij转换为分数坐标
+        rijFractional = np.dot(rij, self.boxInv)
+
+        # 对于每一个维度，如果分数坐标小于-0.5，就加1，如果分数坐标大于0.5，就减1
         for i in range(3):
-            if rij[i] > self.box[i+3]:
-                rij[i] -= self.box[i]
-            elif rij[i] < -self.box[i+3]:
-                rij[i] += self.box[i]
+            rijFractional[i] -= np.floor(rijFractional[i] + 0.5)
+        
+        # 转换为笛卡尔坐标
+        rij = np.dot(rijFractional, self.box)
+        
+        return rij
 
     def getForce(self, lj: LJParameters) -> None:
         '''
@@ -188,15 +199,39 @@ class Atom:
 
     def applyPbc(self) -> None:
         '''
-        对原子坐标应用周期性边界条件
+        对原子坐标应用周期性边界条件，支持三斜盒子
 
         :returns: None
         '''
 
-        # 对于每一个维度，如果坐标小于0，就加上盒子大小，如果坐标大于盒子大小，就减去盒子大小
+        # 转换为分数坐标
+        coordsFractional = np.dot(self.coords, self.boxInv)
+
+        # 对于每一个维度，如果分数坐标小于0，就加1，如果分数坐标大于1，就减1
         for i in range(3):
-            self.coords[:,i] = np.where(self.coords[:,i] < 0, self.coords[:,i] + self.box[i], self.coords[:,i])
-            self.coords[:,i] = np.where(self.coords[:,i] > self.box[i], self.coords[:,i] - self.box[i], self.coords[:,i])
+            coordsFractional[:, i] -= np.floor(coordsFractional[:, i])
+        
+        # 转换为笛卡尔坐标
+        self.coords = np.dot(coordsFractional, self.box)
+    
+    @timer
+    def findNeighborON2(self):
+        cutoffSquare = self.cutoffNeighbor**2
+
+        for i in range(self.number-1):
+            for j in range(i+1, self.number):
+                rij = self.coords[j] - self.coords[i]
+                rij = self.applyMic(rij)
+                r2 = np.sum(rij**2)
+                if r2 < cutoffSquare:
+                    self.NeighborList[i, self.NeighborNumber[i]] = j
+                    self.NeighborNumber[i] += 1
+
+                    if self.NeighborNumber[i] >= self.MaxNeighbor:
+                        raise ValueError(f'Error: number of neighbors for atom {i} exceeds the maximum value {self.MaxNeighbor}')
+    
+    def findNeighborON1(self):
+        raise NotImplementedError
 
     def update(self, isStepOne: bool , dt: float) -> None:
         '''
@@ -215,12 +250,12 @@ class Atom:
         if isStepOne:
             self.coords += dt * self.velocities
 
-def readRun(filename: str='run.in') -> tuple[float, float, int]:
+def readRun(filename: str='run.in') -> tuple[float, float, int, int]:
     '''
     读取run文件，返回速度，时间步长，总步数
 
     :param filename: run文件名
-    :returns: 速度（即温度），时间步长，总步数
+    :returns: 速度（即温度），时间步长，总步数, neighbor_flag
     '''
     with open(filename, 'r') as f:
         for line in f:
@@ -230,13 +265,15 @@ def readRun(filename: str='run.in') -> tuple[float, float, int]:
                 time_step = float(line.split()[1])
             if line.startswith('run'):
                 run = int(line.split()[1])
-    return velocity, time_step, run
+            if line.startswith('neighbor_flag'):
+                neighbor_flag = int(line.split()[1])
+    return velocity, time_step, run, neighbor_flag
 
 def main():
     timer_start = time.time()
     
     # 读取run文件
-    velocity, time_step, run = readRun()
+    velocity, time_step, run, neighbor_flag = readRun()
 
     # 初始化原子和LJ势参数
     atom = Atom()
@@ -261,8 +298,6 @@ def main():
         if i % thermo_freq == 0:
             ke = atom.getKineticEnergy()
             temp = 2.0 * ke / (3.0 * Units.k_B * atom.number)
-            #print(f'{i:04d} {temp:16.16f} {atom.pe:16.16f} {ke:16.16f} {atom.pe + ke:16.16f}')
-            #f.write(f'{i:04d} {temp:16.16f} {atom.pe:16.16f} {ke:16.16f} {atom.pe + ke:16.16f}\n')
             print(f"{temp:16.16f} {ke:16.16f} {atom.pe:16.16f}")
             f.write(f"{temp:16.16f} {ke:16.16f} {atom.pe:16.16f}\n")
     
@@ -272,4 +307,9 @@ def main():
         
 
 if __name__ == '__main__':
-    main()
+    #main()
+    atom = Atom(filename='xyz.in')
+    velocity, time_step, run, neighbor_flag = readRun('run.in')
+    print(atom.number)
+    print(atom.box)
+    print(atom.boxInv)
