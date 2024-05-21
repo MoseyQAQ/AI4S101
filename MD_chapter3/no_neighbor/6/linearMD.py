@@ -142,7 +142,7 @@ class Atom:
 
         # 调整速度
         self.velocities *= scalingFactor
-
+    
     def applyMic(self, rij: np.ndarray) -> np.ndarray:
         '''
         对于给定的两个原子间的距离，应用最小镜像约定
@@ -156,13 +156,16 @@ class Atom:
 
         # 对于每一个维度，如果分数坐标小于-0.5，就加1，如果分数坐标大于0.5，就减1
         for i in range(3):
-            rijFractional[i] -= np.floor(rijFractional[i] + 0.5)
+            if rijFractional[i] < -0.5:
+                rijFractional[i] += 1.0
+            elif rijFractional[i] > 0.5:
+                rijFractional[i] -= 1.0
         
         # 转换为笛卡尔坐标
         rij = np.dot(rijFractional, self.box)
         
         return rij
-
+    @timer
     def getForce(self, lj: LJParameters) -> None:
         '''
         计算原子间的力和势能
@@ -179,15 +182,15 @@ class Atom:
         for i in range(self.number-1):
             
             if self.NeighborFlag == 0:
-                t1 = time()
                 for j in range(i+1, self.number):
                     rij = self.coords[j] - self.coords[i]
                     rij = self.applyMic(rij)
-                    r2 = np.sum(rij**2)
+                    r2 = rij[0]**2 + rij[1]**2 + rij[2]**2
 
                     if r2 < lj.cutoffSquare:
                         r2i = 1.0 / r2
-                        r6i = r2i**3
+                        r4i = r2i*r2i
+                        r6i = r4i*r2i
                         r8i = r6i * r2i
                         r12i = r6i**2
                         r14i = r12i * r2i
@@ -197,8 +200,6 @@ class Atom:
 
                         self.forces[i] += f_ij * rij
                         self.forces[j] -= f_ij * rij
-                t2 = time()
-                print(t2-t1)
             else:
                 for j in range(self.NeighborNumber[i]):
                     k = self.NeighborList[i, j]
@@ -236,6 +237,7 @@ class Atom:
         # 转换为笛卡尔坐标
         self.coords = np.dot(coordsFractional, self.box)
     
+    @timer
     def findNeighborON2(self):
         cutoffSquare = self.cutoffNeighbor**2
 
@@ -393,13 +395,12 @@ def main():
 
     # 初始化原子和LJ势参数
     atom = Atom(MaxNeighbor=1000, cutoffNeighbor=10.0, neighborFlag=neighbor_flag)
-    print(neighbor_flag)
     lj = LJParameters()
 
     # 输出热力学量的频率
     thermo_file = 'thermo.out'
     f = open(thermo_file, 'w')
-    thermo_freq = 100
+    thermo_freq = 1
 
     # 初始化速度
     atom.initializeVelocities(velocity)

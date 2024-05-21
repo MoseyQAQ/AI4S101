@@ -156,13 +156,16 @@ class Atom:
 
         # 对于每一个维度，如果分数坐标小于-0.5，就加1，如果分数坐标大于0.5，就减1
         for i in range(3):
-            rijFractional[i] -= np.floor(rijFractional[i] + 0.5)
+            if rijFractional[i] < -0.5:
+                rijFractional[i] += 1.0
+            elif rijFractional[i] > 0.5:
+                rijFractional[i] -= 1.0
         
         # 转换为笛卡尔坐标
         rij = np.dot(rijFractional, self.box)
         
         return rij
-
+    @timer
     def getForce(self, lj: LJParameters) -> None:
         '''
         计算原子间的力和势能
@@ -182,11 +185,12 @@ class Atom:
                 for j in range(i+1, self.number):
                     rij = self.coords[j] - self.coords[i]
                     rij = self.applyMic(rij)
-                    r2 = np.sum(rij**2)
+                    r2 = rij[0]**2 + rij[1]**2 + rij[2]**2
 
                     if r2 < lj.cutoffSquare:
                         r2i = 1.0 / r2
-                        r6i = r2i**3
+                        r4i = r2i*r2i
+                        r6i = r4i*r2i
                         r8i = r6i * r2i
                         r12i = r6i**2
                         r14i = r12i * r2i
@@ -201,7 +205,7 @@ class Atom:
                     k = self.NeighborList[i, j]
                     rij = self.coords[k] - self.coords[i]
                     rij = self.applyMic(rij)
-                    r2 = np.sum(rij**2)
+                    r2 = rij[0]**2 + rij[1]**2 + rij[2]**2
 
                     if r2 < lj.cutoffSquare:
                         r2i = 1.0 / r2
@@ -238,16 +242,19 @@ class Atom:
         cutoffSquare = self.cutoffNeighbor**2
 
         for i in range(self.number-1):
+
+            # 遍历所有原子对
             for j in range(i+1, self.number):
                 rij = self.coords[j] - self.coords[i]
                 rij = self.applyMic(rij)
-                r2 = np.sum(rij**2)
+                r2 = rij[0]**2 + rij[1]**2 + rij[2]**2
                 if r2 < cutoffSquare:
                     self.NeighborList[i, self.NeighborNumber[i]] = j
                     self.NeighborNumber[i] += 1
 
-                    if self.NeighborNumber[i] >= self.MaxNeighbor:
-                        raise ValueError(f'Error: number of neighbors for atom {i} exceeds the maximum value {self.MaxNeighbor}')
+            # 检查是否超过最大邻居数
+            if self.NeighborNumber[i] >= self.MaxNeighbor:
+                raise ValueError(f'Error: number of neighbors for atom {i} exceeds the maximum value {self.MaxNeighbor}')
     
     def getThickness(self) -> np.ndarray:
         '''
@@ -273,9 +280,9 @@ class Atom:
         coordFractional = np.dot(self.coords, self.boxInv)
         cellIndex = np.floor(coordFractional * thickness * cutoffInv).astype(int)
         cellIndex = np.mod(cellIndex, numCells)
-        print(cellIndex.shape)
         return cellIndex
 
+    @timer
     def findNeighborON1(self):
         cutoffInv = 1.0 / self.cutoffNeighbor
         cutoffSquare = self.cutoffNeighbor**2
@@ -289,10 +296,6 @@ class Atom:
 
         # 获得每个原子所在的盒子索引
         cellIndex = self.getCell(thickness, cutoffInv, numCells)
-
-        # 重置Neighbor
-        self.NeighborNumber = np.zeros(self.number, dtype=int)
-        self.NeighborList = np.zeros((self.number, self.MaxNeighbor), dtype=int)
 
         # 遍历每个原子
         for n in range(self.number):
@@ -317,6 +320,7 @@ class Atom:
 
             if self.NeighborNumber[n] >= self.MaxNeighbor:
                 raise ValueError(f'Error: number of neighbors for atom {n} exceeds the maximum value {self.MaxNeighbor}')
+            
     def checkIfNeedUpdate(self) -> bool:
         '''
         检查是否需要更新NeighborList
@@ -341,6 +345,10 @@ class Atom:
             self.numUpdates += 1
             self.applyPbc()
 
+            # 重置NeighborList
+            self.NeighborNumber: np.ndarray = np.zeros(self.number, dtype=int)
+            self.NeighborList: np.ndarray = np.zeros((self.number, self.MaxNeighbor), dtype=int)
+            
             if self.NeighborFlag == 1:
                 self.findNeighborON1()
             elif self.NeighborFlag == 2:
@@ -384,7 +392,7 @@ def readRun(filename: str='run.in') -> tuple[float, float, int, int]:
 
 def main():
     timer_start = time()
-
+    
     # 读取run文件
     velocity, time_step, run, neighbor_flag = readRun()
 

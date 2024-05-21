@@ -129,7 +129,7 @@ class Atom:
 
         # 调整速度
         self.velocities *= scalingFactor
-    @timer
+
     def applyMic(self, rij: np.ndarray) -> None:
         '''
         对于给定的两个原子间的距离，应用最小镜像约定
