@@ -142,7 +142,7 @@ class Atom:
 
         # 调整速度
         self.velocities *= scalingFactor
-    
+
     def applyMic(self, rij: np.ndarray) -> np.ndarray:
         '''
         对于给定的两个原子间的距离，应用最小镜像约定
@@ -179,6 +179,7 @@ class Atom:
         for i in range(self.number-1):
             
             if self.NeighborFlag == 0:
+                t1 = time()
                 for j in range(i+1, self.number):
                     rij = self.coords[j] - self.coords[i]
                     rij = self.applyMic(rij)
@@ -196,6 +197,8 @@ class Atom:
 
                         self.forces[i] += f_ij * rij
                         self.forces[j] -= f_ij * rij
+                t2 = time()
+                print(t2-t1)
             else:
                 for j in range(self.NeighborNumber[i]):
                     k = self.NeighborList[i, j]
@@ -233,7 +236,6 @@ class Atom:
         # 转换为笛卡尔坐标
         self.coords = np.dot(coordsFractional, self.box)
     
-    @timer
     def findNeighborON2(self):
         cutoffSquare = self.cutoffNeighbor**2
 
@@ -384,13 +386,14 @@ def readRun(filename: str='run.in') -> tuple[float, float, int, int]:
     return velocity, time_step, run, neighbor_flag
 
 def main():
-    timer_start = time.time()
+    timer_start = time()
     
     # 读取run文件
     velocity, time_step, run, neighbor_flag = readRun()
 
     # 初始化原子和LJ势参数
     atom = Atom(MaxNeighbor=1000, cutoffNeighbor=10.0, neighborFlag=neighbor_flag)
+    print(neighbor_flag)
     lj = LJParameters()
 
     # 输出热力学量的频率
@@ -417,7 +420,7 @@ def main():
             f.write(f"{temp:16.16f} {ke:16.16f} {atom.pe:16.16f}\n")
     
     f.close()
-    timer_end = time.time()
+    timer_end = time()
     print(f"Total time: {timer_end - timer_start:.1f} s")
     print(f'Neighbor update times: {atom.numUpdates}')
         

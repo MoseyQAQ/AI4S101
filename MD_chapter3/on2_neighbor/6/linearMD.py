@@ -298,7 +298,6 @@ class Atom:
         for n in range(self.number):
             currentCell = cellIndex[n]
             neighbors = []
-            print(currentCell)
             for i in [-1, 0, 1]:
                 for j in [-1, 0, 1]:
                     for k in [-1, 0, 1]:
@@ -384,8 +383,8 @@ def readRun(filename: str='run.in') -> tuple[float, float, int, int]:
     return velocity, time_step, run, neighbor_flag
 
 def main():
-    timer_start = time.time()
-    
+    timer_start = time()
+
     # 读取run文件
     velocity, time_step, run, neighbor_flag = readRun()
 
@@ -396,7 +395,7 @@ def main():
     # 输出热力学量的频率
     thermo_file = 'thermo.out'
     f = open(thermo_file, 'w')
-    thermo_freq = 100
+    thermo_freq = 1
 
     # 初始化速度
     atom.initializeVelocities(velocity)
@@ -417,7 +416,7 @@ def main():
             f.write(f"{temp:16.16f} {ke:16.16f} {atom.pe:16.16f}\n")
     
     f.close()
-    timer_end = time.time()
+    timer_end = time()
     print(f"Total time: {timer_end - timer_start:.1f} s")
     print(f'Neighbor update times: {atom.numUpdates}')
         
