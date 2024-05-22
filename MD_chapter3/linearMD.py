@@ -295,6 +295,11 @@ class Atom:
         # 获得每个原子所在的盒子索引
         cellIndex = self.getCell(thickness, cutoffInv, numCells)
 
+        # 计算每个盒子中有哪些原子
+        cellAtoms = {tuple(idx): [] for idx in np.ndindex(*numCells)}
+        for atom_idx, cell in enumerate(cellIndex):
+            cellAtoms[tuple(cell)].append(atom_idx)
+
         # 遍历每个原子
         for n in range(self.number):
             currentCell = cellIndex[n]
@@ -304,10 +309,12 @@ class Atom:
             for i in [-1, 0, 1]:
                 for j in [-1, 0, 1]:
                     for k in [-1, 0, 1]:
-                        neighborCell = (currentCell + np.array([i, j, k])) % numCells
-                        atoms_in_cell = np.where((cellIndex == neighborCell).all(axis=1))[0]
+                        neighborCell = tuple((np.array(currentCell) + np.array([i, j, k])) % numCells)
+                        
+                        if neighborCell not in cellAtoms:
+                            raise ValueError(f'Error: cell {neighborCell} not in cellAtoms')
 
-                        for m in atoms_in_cell:
+                        for m in cellAtoms[neighborCell]:
                             if n < m:
                                 rij = self.coords[m] - self.coords[n]
                                 rij = self.applyMic(rij)
