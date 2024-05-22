@@ -165,7 +165,7 @@ class Atom:
         rij = np.dot(rijFractional, self.box)
         
         return rij
-    @timer
+
     def getForce(self, lj: LJParameters) -> None:
         '''
         计算原子间的力和势能
@@ -237,7 +237,6 @@ class Atom:
         # 转换为笛卡尔坐标
         self.coords = np.dot(coordsFractional, self.box)
     
-    @timer
     def findNeighborON2(self):
         cutoffSquare = self.cutoffNeighbor**2
 
@@ -280,9 +279,8 @@ class Atom:
         coordFractional = np.dot(self.coords, self.boxInv)
         cellIndex = np.floor(coordFractional * thickness * cutoffInv).astype(int)
         cellIndex = np.mod(cellIndex, numCells)
-        print(cellIndex.shape)
         return cellIndex
-
+    
     def findNeighborON1(self):
         cutoffInv = 1.0 / self.cutoffNeighbor
         cutoffSquare = self.cutoffNeighbor**2
@@ -297,14 +295,12 @@ class Atom:
         # 获得每个原子所在的盒子索引
         cellIndex = self.getCell(thickness, cutoffInv, numCells)
 
-        # 重置Neighbor
-        self.NeighborNumber = np.zeros(self.number, dtype=int)
-        self.NeighborList = np.zeros((self.number, self.MaxNeighbor), dtype=int)
-
         # 遍历每个原子
         for n in range(self.number):
             currentCell = cellIndex[n]
             neighbors = []
+
+            # 遍历当前原子的27个邻居盒子
             for i in [-1, 0, 1]:
                 for j in [-1, 0, 1]:
                     for k in [-1, 0, 1]:
@@ -312,10 +308,10 @@ class Atom:
                         atoms_in_cell = np.where((cellIndex == neighborCell).all(axis=1))[0]
 
                         for m in atoms_in_cell:
-                            if m != n:
+                            if n < m:
                                 rij = self.coords[m] - self.coords[n]
                                 rij = self.applyMic(rij)
-                                r2 = np.sum(rij**2)
+                                r2 = rij[0]**2 + rij[1]**2 + rij[2]**2
                                 if r2 < cutoffSquare:
                                     neighbors.append(m)
 
@@ -324,6 +320,7 @@ class Atom:
 
             if self.NeighborNumber[n] >= self.MaxNeighbor:
                 raise ValueError(f'Error: number of neighbors for atom {n} exceeds the maximum value {self.MaxNeighbor}')
+            
     def checkIfNeedUpdate(self) -> bool:
         '''
         检查是否需要更新NeighborList
@@ -406,7 +403,7 @@ def main():
     # 输出热力学量的频率
     thermo_file = 'thermo.out'
     f = open(thermo_file, 'w')
-    thermo_freq = 1
+    thermo_freq = 100
 
     # 初始化速度
     atom.initializeVelocities(velocity)
