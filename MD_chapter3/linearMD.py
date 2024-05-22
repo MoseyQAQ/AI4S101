@@ -32,7 +32,9 @@ class LJParameters:
         self.e4s12: float = 4.0 * epsilon * self.sigma12
 
 class Atom:
-    def __init__(self, filename: str='xyz.in') -> None:
+    def __init__(self, filename: str='xyz.in',
+                 cutoffNeighbor: float=10.0, MaxNeighbor: int=1000,
+                 neighborFlag: int=0) -> None:
         '''
         读取xyz文件，初始化原子的坐标，质量，速度，势能，动能
 
@@ -43,7 +45,7 @@ class Atom:
         self.filename = filename
         
         # 读取xyz文件
-        self.number, self.box, self.coords, self.mass = self.parseXyzFile(self.filename)
+        self.number, self.box, self.coords, self.mass, self.boxInv = self.parseXyzFile(self.filename)
 
         # 初始化原子的力、速度、势能、动能
         self.forces = np.zeros((self.number, 3))
@@ -51,8 +53,14 @@ class Atom:
         self.pe = 0.0
         self.ke = self.getKineticEnergy()
 
-        self.MN: int = 1000
-        self.cutoffNeighbor: float = 10.0
+        # Neighbor list parameters
+        self.MaxNeighbor: int = MaxNeighbor
+        self.cutoffNeighbor: float = cutoffNeighbor
+        self.NeighborNumber: np.ndarray = np.zeros(self.number, dtype=int)
+        self.NeighborList: np.ndarray = np.zeros((self.number, self.MaxNeighbor), dtype=int)
+        self.NeighborFlag: int = neighborFlag
+        self.numUpdates: int = 0
+        self.coord_ref: np.ndarray = np.zeros((self.number, 3))
         
     
     def parseXyzFile(self, filename: str) -> tuple[int, np.ndarray, np.ndarray, np.ndarray]:
@@ -60,7 +68,7 @@ class Atom:
         读取xyz文件，返回原子数，盒子大小，原子坐标，原子质量
 
         :param filename: xyz文件名
-        :returns: 原子数，盒子大小，原子坐标，原子质量
+        :returns: 原子数，盒子大小，原子坐标，原子质量, 盒子逆矩阵
         '''
 
         with open(filename, 'r') as f:
@@ -73,7 +81,7 @@ class Atom:
 
             # 读取box的大小
             box = [float(x) for x in f.readline().split()]
-            box = np.array(box)
+            box = np.array(box).reshape((3,3))
 
             # 遍历读取原子坐标和质量
             for i in range(number):
@@ -81,7 +89,10 @@ class Atom:
                 coords[i] = [float(line[1]), float(line[2]), float(line[3])]
                 mass[i] = float(line[4])
 
-        return number, box, coords, mass
+            # 求box的逆矩阵
+            boxInv = np.linalg.inv(box)
+
+        return number, box, coords, mass, boxInv
     
     def getKineticEnergy(self) -> float:
         '''
@@ -132,7 +143,7 @@ class Atom:
         # 调整速度
         self.velocities *= scalingFactor
     
-    def applyMic(self, rij: np.ndarray) -> None:
+    def applyMic(self, rij: np.ndarray) -> np.ndarray:
         '''
         对于给定的两个原子间的距离，应用最小镜像约定
 
@@ -140,12 +151,20 @@ class Atom:
         :returns: None
         '''
 
-        # 对于每一个维度，如果距离大于盒子的一半，就减去盒子的大小，如果距离小于盒子的一半，就加上盒子的大小
+        # rij转换为分数坐标
+        rijFractional = np.dot(rij, self.boxInv)
+
+        # 对于每一个维度，如果分数坐标小于-0.5，就加1，如果分数坐标大于0.5，就减1
         for i in range(3):
-            if rij[i] > self.box[i+3]:
-                rij[i] -= self.box[i]
-            elif rij[i] < -self.box[i+3]:
-                rij[i] += self.box[i]
+            if rijFractional[i] < -0.5:
+                rijFractional[i] += 1.0
+            elif rijFractional[i] > 0.5:
+                rijFractional[i] -= 1.0
+        
+        # 转换为笛卡尔坐标
+        rij = np.dot(rijFractional, self.box)
+        
+        return rij
 
     def getForce(self, lj: LJParameters) -> None:
         '''
@@ -161,43 +180,187 @@ class Atom:
 
         # 遍历所有原子对
         for i in range(self.number-1):
-            for j in range(i+1, self.number):
+            
+            if self.NeighborFlag == 0:
+                for j in range(i+1, self.number):
+                    rij = self.coords[j] - self.coords[i]
+                    rij = self.applyMic(rij)
+                    r2 = rij[0]**2 + rij[1]**2 + rij[2]**2
 
-                # 计算两个原子间的距离,并应用最小镜像约定
-                rij = self.coords[j] - self.coords[i]
-                self.applyMic(rij)
-                r2 = rij[0]**2 + rij[1]**2 + rij[2]**2
+                    if r2 < lj.cutoffSquare:
+                        r2i = 1.0 / r2
+                        r4i = r2i*r2i
+                        r6i = r4i*r2i
+                        r8i = r6i * r2i
+                        r12i = r6i**2
+                        r14i = r12i * r2i
 
-                # 如果距离大于截断距离，就跳过
-                if r2 > lj.cutoffSquare:
-                    continue
-                
-                # 计算一些常量
-                r2_inv = 1.0 / r2
-                r4_inv = r2_inv * r2_inv
-                r6_inv = r2_inv * r4_inv
-                r8_inv = r4_inv * r4_inv
-                r12_inv = r4_inv * r8_inv
-                r14_inv = r6_inv * r8_inv
-                force_ij = lj.e24s6 * r8_inv - lj.e48s12 * r14_inv
+                        f_ij = lj.e24s6 * r8i - lj.e48s12*r14i
+                        self.pe += lj.e4s12*r12i - lj.e4s6*r6i
 
-                # 更新势能和力
-                self.pe += lj.e4s12 * r12_inv - lj.e4s6 * r6_inv
-                self.forces[i] += force_ij * rij
-                self.forces[j] -= force_ij * rij
+                        self.forces[i] += f_ij * rij
+                        self.forces[j] -= f_ij * rij
+            else:
+                for j in range(self.NeighborNumber[i]):
+                    k = self.NeighborList[i, j]
+                    rij = self.coords[k] - self.coords[i]
+                    rij = self.applyMic(rij)
+                    r2 = rij[0]**2 + rij[1]**2 + rij[2]**2
+
+                    if r2 < lj.cutoffSquare:
+                        r2i = 1.0 / r2
+                        r6i = r2i**3
+                        r8i = r6i * r2i
+                        r12i = r6i**2
+                        r14i = r12i * r2i
+
+                        f_ij = lj.e24s6 * r8i - lj.e48s12*r14i
+                        self.pe += lj.e4s12*r12i - lj.e4s6*r6i
+
+                        self.forces[i] += f_ij * rij
+                        self.forces[k] -= f_ij * rij
 
     def applyPbc(self) -> None:
         '''
-        对原子坐标应用周期性边界条件
+        对原子坐标应用周期性边界条件，支持三斜盒子
 
         :returns: None
         '''
 
-        # 对于每一个维度，如果坐标小于0，就加上盒子大小，如果坐标大于盒子大小，就减去盒子大小
-        for i in range(3):
-            self.coords[:,i] = np.where(self.coords[:,i] < 0, self.coords[:,i] + self.box[i], self.coords[:,i])
-            self.coords[:,i] = np.where(self.coords[:,i] > self.box[i], self.coords[:,i] - self.box[i], self.coords[:,i])
+        # 转换为分数坐标
+        coordsFractional = np.dot(self.coords, self.boxInv)
 
+        # 对于每一个维度，如果分数坐标小于0，就加1，如果分数坐标大于1，就减1
+        for i in range(3):
+            coordsFractional[:, i] -= np.floor(coordsFractional[:, i])
+        
+        # 转换为笛卡尔坐标
+        self.coords = np.dot(coordsFractional, self.box)
+    
+    def findNeighborON2(self):
+        cutoffSquare = self.cutoffNeighbor**2
+
+        for i in range(self.number-1):
+
+            # 遍历所有原子对
+            for j in range(i+1, self.number):
+                rij = self.coords[j] - self.coords[i]
+                rij = self.applyMic(rij)
+                r2 = rij[0]**2 + rij[1]**2 + rij[2]**2
+                if r2 < cutoffSquare:
+                    self.NeighborList[i, self.NeighborNumber[i]] = j
+                    self.NeighborNumber[i] += 1
+
+            # 检查是否超过最大邻居数
+            if self.NeighborNumber[i] >= self.MaxNeighbor:
+                raise ValueError(f'Error: number of neighbors for atom {i} exceeds the maximum value {self.MaxNeighbor}')
+    
+    def getThickness(self) -> np.ndarray:
+        '''
+        计算盒子的厚度
+
+        :returns: 盒子的厚度
+        '''
+        volume = np.abs(np.linalg.det(self.box))
+        area1 = np.linalg.norm(np.cross(self.box[0], self.box[1]))
+        area2 = np.linalg.norm(np.cross(self.box[1], self.box[2]))
+        area3 = np.linalg.norm(np.cross(self.box[2], self.box[0]))
+        return volume / np.array([area1, area2, area3])
+    
+    def getCell(self, thickness: np.ndarray, cutoffInv: float, numCells: np.ndarray) -> np.ndarray:
+        '''
+        得到每个盒子中原子数目
+
+        :param thickness: 盒子的厚度
+        :param cutoffInv: 截断距离的倒数
+        :param numCells: 每个方向盒子的个数
+        :returns: 每个原子所在的盒子索引
+        '''
+        coordFractional = np.dot(self.coords, self.boxInv)
+        cellIndex = np.floor(coordFractional * thickness * cutoffInv).astype(int)
+        cellIndex = np.mod(cellIndex, numCells)
+        return cellIndex
+    
+    def findNeighborON1(self):
+        cutoffInv = 1.0 / self.cutoffNeighbor
+        cutoffSquare = self.cutoffNeighbor**2
+
+        # 计算盒子的厚度
+        thickness = self.getThickness()
+
+        # 计算每个方向盒子的个数
+        numCells = np.floor(thickness * cutoffInv).astype(int)
+        totalNumCells = numCells[0] * numCells[1] * numCells[2]
+
+        # 获得每个原子所在的盒子索引
+        cellIndex = self.getCell(thickness, cutoffInv, numCells)
+
+        # 计算每个盒子中有哪些原子
+        cellAtoms = {tuple(idx): [] for idx in np.ndindex(*numCells)}
+        for atom_idx, cell in enumerate(cellIndex):
+            cellAtoms[tuple(cell)].append(atom_idx)
+
+        # 遍历每个原子
+        for n in range(self.number):
+            currentCell = cellIndex[n]
+            neighbors = []
+
+            # 遍历当前原子的27个邻居盒子
+            for i in [-1, 0, 1]:
+                for j in [-1, 0, 1]:
+                    for k in [-1, 0, 1]:
+                        neighborCell = tuple((np.array(currentCell) + np.array([i, j, k])) % numCells)
+                        
+                        if neighborCell not in cellAtoms:
+                            raise ValueError(f'Error: cell {neighborCell} not in cellAtoms')
+
+                        for m in cellAtoms[neighborCell]:
+                            if n < m:
+                                rij = self.coords[m] - self.coords[n]
+                                rij = self.applyMic(rij)
+                                r2 = rij[0]**2 + rij[1]**2 + rij[2]**2
+                                if r2 < cutoffSquare:
+                                    neighbors.append(m)
+
+            self.NeighborNumber[n] = len(neighbors)
+            self.NeighborList[n, :self.NeighborNumber[n]] = neighbors
+
+            if self.NeighborNumber[n] >= self.MaxNeighbor:
+                raise ValueError(f'Error: number of neighbors for atom {n} exceeds the maximum value {self.MaxNeighbor}')
+            
+    def checkIfNeedUpdate(self) -> bool:
+        '''
+        检查是否需要更新NeighborList
+
+        :returns: 是否需要更新
+        '''
+        needUpdate = False
+
+        diff = self.coords - self.coord_ref
+        if any(np.sum(diff**2, axis=1) > 0.25):
+            self.coord_ref = self.coords.copy()
+            needUpdate = True
+
+        return needUpdate
+    
+    def findNeighbor(self):
+        '''
+        更新NeighborList
+        
+        '''
+        if self.checkIfNeedUpdate():
+            self.numUpdates += 1
+            self.applyPbc()
+
+            # 重置NeighborList
+            self.NeighborNumber: np.ndarray = np.zeros(self.number, dtype=int)
+            self.NeighborList: np.ndarray = np.zeros((self.number, self.MaxNeighbor), dtype=int)
+            
+            if self.NeighborFlag == 1:
+                self.findNeighborON1()
+            elif self.NeighborFlag == 2:
+                self.findNeighborON2()
+                
     def update(self, isStepOne: bool , dt: float) -> None:
         '''
         基于Verlet算法更新原子的坐标和速度
@@ -215,31 +378,33 @@ class Atom:
         if isStepOne:
             self.coords += dt * self.velocities
 
-def readRun(filename: str='run.in') -> tuple[float, float, int]:
+def readRun(filename: str='run.in') -> tuple[float, float, int, int]:
     '''
     读取run文件，返回速度，时间步长，总步数
 
     :param filename: run文件名
-    :returns: 速度（即温度），时间步长，总步数
+    :returns: 速度（即温度），时间步长，总步数, neighbor_flag
     '''
     with open(filename, 'r') as f:
         for line in f:
             if line.startswith('velocity'):
                 velocity = float(line.split()[1])
             if line.startswith('time_step'):
-                time_step = float(line.split()[1])
+                time_step = float(line.split()[1]) / Units.TIME_UNIT_CONVERSION
             if line.startswith('run'):
                 run = int(line.split()[1])
-    return velocity, time_step, run
+            if line.startswith('neighbor_flag'):
+                neighbor_flag = int(line.split()[1])
+    return velocity, time_step, run, neighbor_flag
 
 def main():
-    timer_start = time.time()
+    timer_start = time()
     
     # 读取run文件
-    velocity, time_step, run = readRun()
+    velocity, time_step, run, neighbor_flag = readRun()
 
     # 初始化原子和LJ势参数
-    atom = Atom()
+    atom = Atom(MaxNeighbor=1000, cutoffNeighbor=10.0, neighborFlag=neighbor_flag)
     lj = LJParameters()
 
     # 输出热力学量的频率
@@ -252,7 +417,8 @@ def main():
 
     # 开始模拟
     for i in range(run):
-        atom.applyPbc()
+        if atom.NeighborFlag !=0:
+            atom.findNeighbor()
         atom.update(True, time_step)
         atom.getForce(lj)
         atom.update(False, time_step)
@@ -261,14 +427,13 @@ def main():
         if i % thermo_freq == 0:
             ke = atom.getKineticEnergy()
             temp = 2.0 * ke / (3.0 * Units.k_B * atom.number)
-            #print(f'{i:04d} {temp:16.16f} {atom.pe:16.16f} {ke:16.16f} {atom.pe + ke:16.16f}')
-            #f.write(f'{i:04d} {temp:16.16f} {atom.pe:16.16f} {ke:16.16f} {atom.pe + ke:16.16f}\n')
             print(f"{temp:16.16f} {ke:16.16f} {atom.pe:16.16f}")
             f.write(f"{temp:16.16f} {ke:16.16f} {atom.pe:16.16f}\n")
     
     f.close()
-    timer_end = time.time()
+    timer_end = time()
     print(f"Total time: {timer_end - timer_start:.1f} s")
+    print(f'Neighbor update times: {atom.numUpdates}')
         
 
 if __name__ == '__main__':

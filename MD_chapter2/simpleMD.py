@@ -227,7 +227,7 @@ def readRun(filename: str='run.in') -> tuple[float, float, int]:
             if line.startswith('velocity'):
                 velocity = float(line.split()[1])
             if line.startswith('time_step'):
-                time_step = float(line.split()[1])
+                time_step = float(line.split()[1]) / Units.TIME_UNIT_CONVERSION
             if line.startswith('run'):
                 run = int(line.split()[1])
     return velocity, time_step, run
