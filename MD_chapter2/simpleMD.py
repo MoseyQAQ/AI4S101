@@ -1,7 +1,5 @@
 import numpy as np
 import time
-from line_profiler import LineProfiler
-profile = LineProfiler()
 
 def timer(func):
     def func_wrapper(*args, **kwargs):
@@ -148,43 +146,38 @@ class Atom:
                 rij[i] += self.box[i]
 
     def getForce(self, lj: LJParameters) -> None:
-        '''
-        计算原子间的力和势能
-
-        :param lj: LJ势参数
-        :returns: None
-        '''
-
+        
         # 初始化势能和力
         self.pe = 0.0
         self.forces = np.zeros((self.number, 3))
 
-        # 遍历所有原子对
-        for i in range(self.number-1):
-            for j in range(i+1, self.number):
+        # 获得上三角index
+        index = np.triu_indices(self.number, 1)
 
-                # 计算两个原子间的距离,并应用最小镜像约定
-                rij = self.coords[j] - self.coords[i]
-                self.applyMic(rij)
-                r2 = rij[0]**2 + rij[1]**2 + rij[2]**2
+        rij = self.coords[index[1]] - self.coords[index[0]]
+        
+        # 最小镜像约定
+        for i in range(3):
+            rij[:,i] = np.where(rij[:,i] > self.box[i+3], rij[:,i] - self.box[i], rij[:,i])
+            rij[:,i] = np.where(rij[:,i] < -self.box[i+3], rij[:,i] + self.box[i], rij[:,i])
 
-                # 如果距离大于截断距离，就跳过
-                if r2 > lj.cutoffSquare:
-                    continue
-                
-                # 计算一些常量
-                r2_inv = 1.0 / r2
-                r4_inv = r2_inv * r2_inv
-                r6_inv = r2_inv * r4_inv
-                r8_inv = r4_inv * r4_inv
-                r12_inv = r4_inv * r8_inv
-                r14_inv = r6_inv * r8_inv
-                force_ij = lj.e24s6 * r8_inv - lj.e48s12 * r14_inv
+        r2 = np.sum(rij**2, axis=1)
+        mask = r2 < lj.cutoffSquare
+        rij = rij[mask]
+        r2 = r2[mask]
+        
+        r2_inv = 1.0 / r2
+        r4_inv = r2_inv * r2_inv
+        r6_inv = r2_inv * r4_inv
+        r8_inv = r4_inv * r4_inv
+        r12_inv = r4_inv * r8_inv
+        r14_inv = r6_inv * r8_inv
+        force_ij = lj.e24s6 * r8_inv - lj.e48s12 * r14_inv
 
-                # 更新势能和力
-                self.pe += lj.e4s12 * r12_inv - lj.e4s6 * r6_inv
-                self.forces[i] += force_ij * rij
-                self.forces[j] -= force_ij * rij
+        self.pe += np.sum(lj.e4s12 * r12_inv - lj.e4s6 * r6_inv)
+        force = force_ij[:, np.newaxis] * rij
+        np.add.at(self.forces, index[0][mask], force)
+        np.subtract.at(self.forces, index[1][mask], force)
 
     def applyPbc(self) -> None:
         '''
@@ -261,8 +254,6 @@ def main():
         if i % thermo_freq == 0:
             ke = atom.getKineticEnergy()
             temp = 2.0 * ke / (3.0 * Units.k_B * atom.number)
-            #print(f'{i:04d} {temp:16.16f} {atom.pe:16.16f} {ke:16.16f} {atom.pe + ke:16.16f}')
-            #f.write(f'{i:04d} {temp:16.16f} {atom.pe:16.16f} {ke:16.16f} {atom.pe + ke:16.16f}\n')
             print(f"{temp:16.16f} {ke:16.16f} {atom.pe:16.16f}")
             f.write(f"{temp:16.16f} {ke:16.16f} {atom.pe:16.16f}\n")
     
