@@ -165,7 +165,68 @@ class Atom:
         rij = np.dot(rijFractional, self.box)
         
         return rij
+    def getForce_vectorlized(self, lj: LJParameters) -> None:
+        self.pe =0.0
+        self.forces = np.zeros((self.number, 3))
 
+        if self.NeighborFlag == 0:
+            index = np.triu_indices(self.number, 1)
+
+            rij = self.coords[index[1]] - self.coords[index[0]]
+            rij_frac = np.dot(rij, self.boxInv)
+            rij_frac = np.where(rij_frac < -0.5, rij_frac + 1.0, rij_frac)
+            rij_frac = np.where(rij_frac > 0.5, rij_frac - 1.0, rij_frac)
+            rij = np.dot(rij_frac, self.box)
+
+            r2 = np.sum(rij**2, axis=1)
+            mask = r2 < lj.cutoffSquare
+            rij = rij[mask]
+            r2 = r2[mask]
+
+            r2i = 1.0 / r2
+            r6i = r2i**3
+            r8i = r6i * r2i
+            r12i = r6i**2
+            r14i = r12i * r2i
+
+            f_ij = lj.e24s6 * r8i - lj.e48s12*r14i
+
+            self.pe += np.sum(lj.e4s12*r12i - lj.e4s6*r6i)
+            force = f_ij[:, np.newaxis] * rij
+
+            np.add.at(self.forces, index[0][mask], force)
+            np.subtract.at(self.forces, index[1][mask], force)
+
+        else:
+            for i in range(self.number-1):
+                neighbors = self.NeighborList[i, :self.NeighborNumber[i]]
+                rij = self.coords[neighbors] - self.coords[i]
+        
+                ij = self.coords[index[1]] - self.coords[index[0]]
+                rij_frac = np.dot(rij, self.boxInv)
+                rij_frac = np.where(rij_frac < -0.5, rij_frac + 1.0, rij_frac)
+                rij_frac = np.where(rij_frac > 0.5, rij_frac - 1.0, rij_frac)
+                rij = np.dot(rij_frac, self.box)
+
+                r2 = np.sum(rij**2, axis=1)
+                mask = r2 < lj.cutoffSquare
+                rij = rij[mask]
+                r2 = r2[mask]
+
+                r2i = 1.0 / r2
+                r6i = r2i**3
+                r8i = r6i * r2i
+                r12i = r6i**2
+                r14i = r12i * r2i
+
+                f_ij = lj.e24s6 * r8i - lj.e48s12*r14i
+
+                self.pe += np.sum(lj.e4s12*r12i - lj.e4s6*r6i)
+                force = f_ij[:, np.newaxis] * rij
+
+                np.add.at(self.forces, index[0][mask], force)
+                np.subtract.at(self.forces, index[1][mask], force)
+    
     def getForce(self, lj: LJParameters) -> None:
         '''
         计算原子间的力和势能
@@ -240,20 +301,24 @@ class Atom:
     def findNeighborON2(self):
         cutoffSquare = self.cutoffNeighbor**2
 
-        for i in range(self.number-1):
+        index = np.triu_indices(self.number, 1)
+        rij = self.coords[index[1]] - self.coords[index[0]]
+        rij_frac = np.dot(rij, self.boxInv)
+        rij_frac = np.where(rij_frac < -0.5, rij_frac + 1.0, rij_frac)
+        rij_frac = np.where(rij_frac > 0.5, rij_frac - 1.0, rij_frac)
+        rij = np.dot(rij_frac, self.box)
 
-            # 遍历所有原子对
-            for j in range(i+1, self.number):
-                rij = self.coords[j] - self.coords[i]
-                rij = self.applyMic(rij)
-                r2 = rij[0]**2 + rij[1]**2 + rij[2]**2
-                if r2 < cutoffSquare:
-                    self.NeighborList[i, self.NeighborNumber[i]] = j
-                    self.NeighborNumber[i] += 1
+        r2 = np.sum(rij**2, axis=1)
+        mask = r2 < cutoffSquare
+        pairs = np.column_stack((index[0][mask], index[1][mask]))
 
-            # 检查是否超过最大邻居数
-            if self.NeighborNumber[i] >= self.MaxNeighbor:
-                raise ValueError(f'Error: number of neighbors for atom {i} exceeds the maximum value {self.MaxNeighbor}')
+        # build neighbor list
+        for i, j in pairs:
+            self.NeighborList[i, self.NeighborNumber[i]] = j
+            self.NeighborNumber[i] += 1
+        
+        if np.any(self.NeighborNumber > self.MaxNeighbor):
+            raise ValueError(f'Error: number of neighbors exceeds the maximum value {self.MaxNeighbor}')
     
     def getThickness(self) -> np.ndarray:
         '''
@@ -437,4 +502,6 @@ def main():
         
 
 if __name__ == '__main__':
-    main()
+    #main()
+    atom = Atom(MaxNeighbor=1000, cutoffNeighbor=10.0, neighborFlag=1)
+    atom.findNeighborON2()
