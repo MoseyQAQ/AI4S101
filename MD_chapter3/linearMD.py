@@ -356,7 +356,6 @@ class Atom:
         displacement_squared = np.sum(diff**2, axis=1)
 
         if np.any(displacement_squared > 0.25):
-            print(np.max(displacement_squared))
             self.coord_ref = self.coords.copy()
             return True
 
