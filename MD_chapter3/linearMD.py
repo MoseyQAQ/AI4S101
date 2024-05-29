@@ -165,7 +165,8 @@ class Atom:
         rij = np.dot(rijFractional, self.box)
         
         return rij
-    def getForce_vectorlized(self, lj: LJParameters) -> None:
+    
+    def getForce(self, lj: LJParameters) -> None:
         self.pe =0.0
         self.forces = np.zeros((self.number, 3))
 
@@ -201,8 +202,6 @@ class Atom:
             for i in range(self.number-1):
                 neighbors = self.NeighborList[i, :self.NeighborNumber[i]]
                 rij = self.coords[neighbors] - self.coords[i]
-        
-                ij = self.coords[index[1]] - self.coords[index[0]]
                 rij_frac = np.dot(rij, self.boxInv)
                 rij_frac = np.where(rij_frac < -0.5, rij_frac + 1.0, rij_frac)
                 rij_frac = np.where(rij_frac > 0.5, rij_frac - 1.0, rij_frac)
@@ -224,62 +223,8 @@ class Atom:
                 self.pe += np.sum(lj.e4s12*r12i - lj.e4s6*r6i)
                 force = f_ij[:, np.newaxis] * rij
 
-                np.add.at(self.forces, index[0][mask], force)
-                np.subtract.at(self.forces, index[1][mask], force)
-    
-    def getForce(self, lj: LJParameters) -> None:
-        '''
-        计算原子间的力和势能
-
-        :param lj: LJ势参数
-        :returns: None
-        '''
-
-        # 初始化势能和力
-        self.pe = 0.0
-        self.forces = np.zeros((self.number, 3))
-
-        # 遍历所有原子对
-        for i in range(self.number-1):
-            
-            if self.NeighborFlag == 0:
-                for j in range(i+1, self.number):
-                    rij = self.coords[j] - self.coords[i]
-                    rij = self.applyMic(rij)
-                    r2 = rij[0]**2 + rij[1]**2 + rij[2]**2
-
-                    if r2 < lj.cutoffSquare:
-                        r2i = 1.0 / r2
-                        r4i = r2i*r2i
-                        r6i = r4i*r2i
-                        r8i = r6i * r2i
-                        r12i = r6i**2
-                        r14i = r12i * r2i
-
-                        f_ij = lj.e24s6 * r8i - lj.e48s12*r14i
-                        self.pe += lj.e4s12*r12i - lj.e4s6*r6i
-
-                        self.forces[i] += f_ij * rij
-                        self.forces[j] -= f_ij * rij
-            else:
-                for j in range(self.NeighborNumber[i]):
-                    k = self.NeighborList[i, j]
-                    rij = self.coords[k] - self.coords[i]
-                    rij = self.applyMic(rij)
-                    r2 = rij[0]**2 + rij[1]**2 + rij[2]**2
-
-                    if r2 < lj.cutoffSquare:
-                        r2i = 1.0 / r2
-                        r6i = r2i**3
-                        r8i = r6i * r2i
-                        r12i = r6i**2
-                        r14i = r12i * r2i
-
-                        f_ij = lj.e24s6 * r8i - lj.e48s12*r14i
-                        self.pe += lj.e4s12*r12i - lj.e4s6*r6i
-
-                        self.forces[i] += f_ij * rij
-                        self.forces[k] -= f_ij * rij
+                np.add.at(self.forces, [i], np.sum(force, axis=0))
+                np.subtract.at(self.forces, neighbors[mask], force)
 
     def applyPbc(self) -> None:
         '''
@@ -297,7 +242,7 @@ class Atom:
         
         # 转换为笛卡尔坐标
         self.coords = np.dot(coordsFractional, self.box)
-    
+    @timer
     def findNeighborON2(self):
         cutoffSquare = self.cutoffNeighbor**2
 
@@ -332,6 +277,7 @@ class Atom:
         area3 = np.linalg.norm(np.cross(self.box[2], self.box[0]))
         return volume / np.array([area1, area2, area3])
     
+
     def getCell(self, thickness: np.ndarray, cutoffInv: float, numCells: np.ndarray) -> np.ndarray:
         '''
         得到每个盒子中原子数目
@@ -345,7 +291,7 @@ class Atom:
         cellIndex = np.floor(coordFractional * thickness * cutoffInv).astype(int)
         cellIndex = np.mod(cellIndex, numCells)
         return cellIndex
-    
+
     def findNeighborON1(self):
         cutoffInv = 1.0 / self.cutoffNeighbor
         cutoffSquare = self.cutoffNeighbor**2
@@ -362,36 +308,38 @@ class Atom:
 
         # 计算每个盒子中有哪些原子
         cellAtoms = {tuple(idx): [] for idx in np.ndindex(*numCells)}
-        for atom_idx, cell in enumerate(cellIndex):
-            cellAtoms[tuple(cell)].append(atom_idx)
+        for atom_idx, cell_idx in enumerate(cellIndex):
+            cellAtoms[tuple(cell_idx)].append(atom_idx)
 
-        # 遍历每个原子
+        # 计算近邻盒子
+        offsets = np.array([[-1,0,1]]*3)
+        neighbor_offsets = np.array(np.meshgrid(*offsets)).T.reshape(-1, 3)
+        
+        # walk through each atom
         for n in range(self.number):
-            currentCell = cellIndex[n]
-            neighbors = []
+            currentCell = tuple(cellIndex[n])
 
-            # 遍历当前原子的27个邻居盒子
-            for i in [-1, 0, 1]:
-                for j in [-1, 0, 1]:
-                    for k in [-1, 0, 1]:
-                        neighborCell = tuple((np.array(currentCell) + np.array([i, j, k])) % numCells)
-                        
-                        if neighborCell not in cellAtoms:
-                            raise ValueError(f'Error: cell {neighborCell} not in cellAtoms')
+            neighbor_cells = (currentCell + neighbor_offsets) % numCells
+            neighbor_cells = [tuple(cell) for cell in neighbor_cells]
 
-                        for m in cellAtoms[neighborCell]:
-                            if n < m:
-                                rij = self.coords[m] - self.coords[n]
-                                rij = self.applyMic(rij)
-                                r2 = rij[0]**2 + rij[1]**2 + rij[2]**2
-                                if r2 < cutoffSquare:
-                                    neighbors.append(m)
+            all_neighbors = np.array([m for cell in neighbor_cells if cell in cellAtoms for m in cellAtoms[cell] if n < m])
+            if all_neighbors.size == 0:
+                continue
 
-            self.NeighborNumber[n] = len(neighbors)
-            self.NeighborList[n, :self.NeighborNumber[n]] = neighbors
+            rij = self.coords[all_neighbors] - self.coords[n]
+            rij_frac = np.dot(rij, self.boxInv)
+            rij_frac = np.where(rij_frac < -0.5, rij_frac + 1.0, rij_frac)
+            rij_frac = np.where(rij_frac > 0.5, rij_frac - 1.0, rij_frac)
+            rij = np.dot(rij_frac, self.box)
 
-            if self.NeighborNumber[n] >= self.MaxNeighbor:
-                raise ValueError(f'Error: number of neighbors for atom {n} exceeds the maximum value {self.MaxNeighbor}')
+            r2 = np.sum(rij**2, axis=1)
+            valid_neighbors = all_neighbors[r2 < cutoffSquare]
+
+            self.NeighborList[n, :len(valid_neighbors)] = valid_neighbors
+            self.NeighborNumber[n] = len(valid_neighbors)
+
+            if len(valid_neighbors) > self.MaxNeighbor:
+                raise ValueError(f'Error: number of neighbors exceeds the maximum value {self.MaxNeighbor}')
             
     def checkIfNeedUpdate(self) -> bool:
         '''
@@ -399,14 +347,20 @@ class Atom:
 
         :returns: 是否需要更新
         '''
-        needUpdate = False
 
         diff = self.coords - self.coord_ref
-        if any(np.sum(diff**2, axis=1) > 0.25):
-            self.coord_ref = self.coords.copy()
-            needUpdate = True
+        diff_frac = np.dot(diff, self.boxInv)
+        diff_frac = np.where(diff_frac < -0.5, diff_frac + 1.0, diff_frac)
+        diff_frac = np.where(diff_frac > 0.5, diff_frac - 1.0, diff_frac)
+        diff = np.dot(diff_frac, self.box)
+        displacement_squared = np.sum(diff**2, axis=1)
 
-        return needUpdate
+        if np.any(displacement_squared > 0.25):
+            print(np.max(displacement_squared))
+            self.coord_ref = self.coords.copy()
+            return True
+
+        return False
     
     def findNeighbor(self):
         '''
@@ -482,7 +436,7 @@ def main():
 
     # 开始模拟
     for i in range(run):
-        if atom.NeighborFlag !=0:
+        if atom.NeighborFlag != 0:
             atom.findNeighbor()
         atom.update(True, time_step)
         atom.getForce(lj)
@@ -502,6 +456,4 @@ def main():
         
 
 if __name__ == '__main__':
-    #main()
-    atom = Atom(MaxNeighbor=1000, cutoffNeighbor=10.0, neighborFlag=1)
-    atom.findNeighborON2()
+    main()
