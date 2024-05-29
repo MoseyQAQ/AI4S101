@@ -349,14 +349,9 @@ class Atom:
         '''
 
         diff = self.coords - self.coord_ref
-        diff_frac = np.dot(diff, self.boxInv)
-        diff_frac = np.where(diff_frac < -0.5, diff_frac + 1.0, diff_frac)
-        diff_frac = np.where(diff_frac > 0.5, diff_frac - 1.0, diff_frac)
-        diff = np.dot(diff_frac, self.box)
         displacement_squared = np.sum(diff**2, axis=1)
 
         if np.any(displacement_squared > 0.25):
-            self.coord_ref = self.coords.copy()
             return True
 
         return False
@@ -378,6 +373,8 @@ class Atom:
                 self.findNeighborON1()
             elif self.NeighborFlag == 2:
                 self.findNeighborON2()
+            
+            self.coord_ref = np.copy(self.coords)
                 
     def update(self, isStepOne: bool , dt: float) -> None:
         '''
