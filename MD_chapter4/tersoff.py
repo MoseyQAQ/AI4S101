@@ -436,7 +436,6 @@ class Atom:
                 r12 = np.dot(r12_frac, self.box)
                 d12 = np.linalg.norm(r12)
                 d12_inv = 1.0 / d12
-                d12_inv_square = d12_inv**2
 
                 fc12, fcp12, fa12, fap12, fr12, frp12 = self.find_all(d12)
                 b12 = self.b[n1, idx2]
@@ -445,7 +444,7 @@ class Atom:
                 factor1 = -b12 * fa12 + fr12 
                 factor2 = -b12 * fap12 + frp12
                 factor3 = (fcp12 * factor1 + fc12 * factor2) / d12 
-                f12 += factor3 * r12
+                f12 += 0.5 * factor3 * r12
 
                 for idx3, n3 in enumerate(neighbors):
                     if n3 == n2:
@@ -466,8 +465,8 @@ class Atom:
                     cos_x = r13[0]/(d12*d13) - r12[0]*cos123/(d12**2)
                     cos_y = r13[1]/(d12*d13) - r12[1]*cos123/(d12**2)
                     cos_z = r13[2]/(d12*d13) - r12[2]*cos123/(d12**2)
-                    factor123a = (-bp12 * fc12 * fa12 * fc13 - bp13 * fc13 * fa13 * fc12) * g123
-                    factor123b = (-bp13 * fc13 * fa13 * fcp12 * g123 * d12_inv)
+                    factor123a = (-bp12 * fc12 * fa12 * fc13 - bp13 * fc13 * fa13 * fc12) * gp123
+                    factor123b = -bp13 * fc13 * fa13 * fcp12 * g123 * d12_inv
                     f12[0] += 0.5 * (r12[0] * factor123b + factor123a * cos_x)
                     f12[1] += 0.5 * (r12[1] * factor123b + factor123a * cos_y)
                     f12[2] += 0.5 * (r12[2] * factor123b + factor123a * cos_z)
@@ -479,7 +478,7 @@ class Atom:
     def find_b_and_bp(self) -> None:
         for n1 in range(self.number):
             neighbors = self.NeighborList[n1, :self.NeighborNumber[n1]]
-            for n2 in neighbors:
+            for idx2, n2 in enumerate(neighbors):
                 coord_12 = self.coords[n2] - self.coords[n1]
                 coord_12_frac = np.dot(coord_12, self.boxInv)
                 coord_12_frac = np.where(coord_12_frac < -0.5, coord_12_frac + 1.0, coord_12_frac)
@@ -504,8 +503,8 @@ class Atom:
                 
                 bzn = np.power(self.tersoff.beta * zeta, self.tersoff.n)
                 b12 = np.power(1.0 + bzn, self.tersoff.minus_half_over_n)
-                self.b[n1, n2] = b12
-                self.bp[n1, n2] = -b12 * bzn * 0.5 / ((1+bzn) * zeta)
+                self.b[n1, idx2] = b12
+                self.bp[n1, idx2] = -b12 * bzn * 0.5 / ((1.0 + bzn) * zeta)
     
     def find_fc(self, d_12: float) -> float:
         if d_12 < self.tersoff.S:
@@ -564,7 +563,7 @@ def readRun(filename: str='run.in') -> tuple[float, float, int, int]:
     return velocity, time_step, run, neighbor_flag
 
 def main():
-    atom =Atom(filename='model.xyz', cutoffNeighbor=3.1, MaxNeighbor=10, neighborFlag=1, tersoff=TersoffParameters())
+    atom =Atom(filename='model.xyz', cutoffNeighbor=3.1, MaxNeighbor=10, neighborFlag=2, tersoff=TersoffParameters())
     
     atom.findNeighbor()
     atom.getForce_tersoff()
