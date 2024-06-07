@@ -568,7 +568,7 @@ def readRun(filename: str='run.in') -> tuple[float, float, int, int]:
     return velocity, time_step, run, neighbor_flag
 
 def main():
-    atom =Atom(filename='model.xyz', cutoffNeighbor=3.1, MaxNeighbor=10, neighborFlag=2, tersoff=TersoffParameters())
+    atom =Atom(filename='model.xyz', cutoffNeighbor=3.1, MaxNeighbor=4, neighborFlag=2, tersoff=TersoffParameters())
     
     atom.findNeighbor()
     atom.getForce_warp()
