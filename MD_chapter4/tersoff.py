@@ -270,7 +270,7 @@ class Atom:
         
         # 转换为笛卡尔坐标
         self.coords = np.dot(coordsFractional, self.box)
-    @timer
+
     def findNeighborON2(self):
         cutoffSquare = self.cutoffNeighbor**2
 
@@ -289,6 +289,8 @@ class Atom:
         for i, j in pairs:
             self.NeighborList[i, self.NeighborNumber[i]] = j
             self.NeighborNumber[i] += 1
+            self.NeighborList[j, self.NeighborNumber[j]] = i
+            self.NeighborNumber[j] += 1
         
         if np.any(self.NeighborNumber > self.MaxNeighbor):
             raise ValueError(f'Error: number of neighbors exceeds the maximum value {self.MaxNeighbor}')
@@ -542,6 +544,9 @@ class Atom:
             fc = 0.0
             fcp = 0.0
         return fc, fcp, fa, fap, fr, frp
+    def getForce_warp(self) -> None:
+        self.find_b_and_bp()
+        self.getForce_tersoff()
 
 def readRun(filename: str='run.in') -> tuple[float, float, int, int]:
     '''
@@ -566,35 +571,34 @@ def main():
     atom =Atom(filename='model.xyz', cutoffNeighbor=3.1, MaxNeighbor=10, neighborFlag=2, tersoff=TersoffParameters())
     
     atom.findNeighbor()
-    atom.getForce_tersoff()
+    atom.getForce_warp()
     np.save('a.npy', atom.forces)
-    print(np.allclose(atom.coord_ref, atom.coords))
     delta = 2.0e-5
     f = np.zeros((atom.number, 3))
     for n in range(atom.number):
         atom.coords[n, 0] = atom.coord_ref[n, 0] + delta
-        atom.getForce_tersoff()
+        atom.getForce_warp()
         pePostive = atom.pe
         atom.coords[n, 0] = atom.coord_ref[n, 0] - delta
-        atom.getForce_tersoff()
+        atom.getForce_warp()
         peNegative = atom.pe
         atom.coords[n, 0] = atom.coord_ref[n, 0]
         fx = (peNegative - pePostive) / (2.0 * delta)
 
         atom.coords[n, 1] = atom.coord_ref[n, 1] + delta
-        atom.getForce_tersoff()
+        atom.getForce_warp()
         pePostive = atom.pe
         atom.coords[n, 1] = atom.coord_ref[n, 1] - delta
-        atom.getForce_tersoff()
+        atom.getForce_warp()
         peNegative = atom.pe
         atom.coords[n, 1] = atom.coord_ref[n, 1]
         fy = (peNegative - pePostive) / (2.0 * delta)
 
         atom.coords[n, 2] = atom.coord_ref[n, 2] + delta
-        atom.getForce_tersoff()
+        atom.getForce_warp()
         pePostive = atom.pe
         atom.coords[n, 2] = atom.coord_ref[n, 2] - delta
-        atom.getForce_tersoff()
+        atom.getForce_warp()
         peNegative = atom.pe
         atom.coords[n, 2] = atom.coord_ref[n, 2]
         fz = (peNegative - pePostive) / (2.0 * delta)
