@@ -48,7 +48,7 @@ class TersoffParameters:
         self.S = S
         self.minus_half_over_n = -0.5 / n
         self.pi = np.pi 
-        self.pi_factor = 1.0 / (R-S)
+        self.pi_factor = np.pi / (S-R)
         self.c2 = c**2
         self.d2 = d**2
         self.c2overd2 = self.c2 / self.d2
@@ -464,14 +464,10 @@ class Atom:
                     cos123 = np.dot(r12, r13) / (d12 * d13)
                     g123, gp123 = self.find_g_and_gp(cos123)
                     
-                    cos_x = r13[0]/(d12*d13) - r12[0]*cos123/(d12**2)
-                    cos_y = r13[1]/(d12*d13) - r12[1]*cos123/(d12**2)
-                    cos_z = r13[2]/(d12*d13) - r12[2]*cos123/(d12**2)
+                    cos = r13/(d12 * d13) - r12*cos123/(d12**2)
                     factor123a = (-bp12 * fc12 * fa12 * fc13 - bp13 * fc13 * fa13 * fc12) * gp123
                     factor123b = -bp13 * fc13 * fa13 * fcp12 * g123 * d12_inv
-                    f12[0] += 0.5 * (r12[0] * factor123b + factor123a * cos_x)
-                    f12[1] += 0.5 * (r12[1] * factor123b + factor123a * cos_y)
-                    f12[2] += 0.5 * (r12[2] * factor123b + factor123a * cos_z)
+                    f12 += 0.5 * (r12 * factor123b + factor123a * cos)
                 
                 self.pe += factor1 * fc12 * 0.5
                 self.forces[n1] += f12
@@ -501,18 +497,18 @@ class Atom:
                     d_13 = np.linalg.norm(coord_13)
 
                     cos = np.dot(coord_12, coord_13) / (d_12 * d_13)
-                    zeta += self.find_g(cos) * self.find_fc(d_12)
-                
+                    zeta += self.find_g(cos) * self.find_fc(d_13)
+
                 bzn = np.power(self.tersoff.beta * zeta, self.tersoff.n)
                 b12 = np.power(1.0 + bzn, self.tersoff.minus_half_over_n)
                 self.b[n1, idx2] = b12
                 self.bp[n1, idx2] = -b12 * bzn * 0.5 / ((1.0 + bzn) * zeta)
     
     def find_fc(self, d_12: float) -> float:
-        if d_12 < self.tersoff.S:
+        if d_12 < self.tersoff.R:
             return 1.0
-        elif d_12 < self.tersoff.R:
-            return 0.5 * np.cos((self.tersoff.pi_factor * (d_12 - self.tersoff.S))) + 0.5 
+        elif d_12 < self.tersoff.S:
+            return 0.5 * np.cos((self.tersoff.pi_factor * (d_12 - self.tersoff.R))) + 0.5 
         else:
             return 0.0
     def find_fa(self, d12: float) -> float:
@@ -534,12 +530,12 @@ class Atom:
         fa = self.tersoff.B * np.exp(-self.tersoff.mu * d12)
         fap = -self.tersoff.mu * fa
 
-        if d12 < self.tersoff.S:
+        if d12 < self.tersoff.R:
             fc = 1.0
             fcp = 0.0
-        elif d12 < self.tersoff.R:
-            fc = 0.5 * np.cos(self.tersoff.pi_factor * (d12 - self.tersoff.S)) + 0.5
-            fcp = -0.5 * self.tersoff.pi_factor * np.sin(self.tersoff.pi_factor * (d12 - self.tersoff.S))
+        elif d12 < self.tersoff.S:
+            fc = 0.5 * np.cos(self.tersoff.pi_factor * (d12 - self.tersoff.R)) + 0.5
+            fcp = -0.5 * self.tersoff.pi_factor * np.sin(self.tersoff.pi_factor * (d12 - self.tersoff.R))
         else:
             fc = 0.0
             fcp = 0.0
@@ -572,7 +568,7 @@ def main():
     
     atom.findNeighbor()
     atom.getForce_warp()
-    np.save('a.npy', atom.forces)
+    analytical = np.copy(atom.forces)
     delta = 2.0e-5
     f = np.zeros((atom.number, 3))
     for n in range(atom.number):
@@ -605,7 +601,8 @@ def main():
 
         f[n] = np.array([fx, fy, fz])
     
-    np.save('n.npy', f)
+    data = np.concatenate((analytical, f), axis=0)
+    np.save('force.npy', data)
         
 
 if __name__ == '__main__':
