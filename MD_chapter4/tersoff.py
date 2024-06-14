@@ -302,10 +302,13 @@ class Atom:
         :returns: 盒子的厚度
         '''
         volume = np.abs(np.linalg.det(self.box))
-        area1 = np.linalg.norm(np.cross(self.box[0], self.box[1]))
-        area2 = np.linalg.norm(np.cross(self.box[1], self.box[2]))
-        area3 = np.linalg.norm(np.cross(self.box[2], self.box[0]))
-        return volume / np.array([area1, area2, area3])
+        area_ab = np.linalg.norm(np.cross(self.box[0], self.box[1]))
+        area_ac = np.linalg.norm(np.cross(self.box[0], self.box[2]))
+        area_bc = np.linalg.norm(np.cross(self.box[1], self.box[2]))
+        l_a = volume / area_ab
+        l_b = volume / area_ac
+        l_c = volume / area_bc
+        return np.array([l_a, l_b, l_c])
     
 
     def getCell(self, thickness: np.ndarray, cutoffInv: float, numCells: np.ndarray) -> np.ndarray:
@@ -350,7 +353,7 @@ class Atom:
             currentCell = tuple(cellIndex[n])
 
             neighbor_cells = (currentCell + neighbor_offsets) % numCells
-            neighbor_cells = [tuple(cell) for cell in neighbor_cells]
+            neighbor_cells = set([tuple(cell) for cell in neighbor_cells])
 
             all_neighbors = np.array([m for cell in neighbor_cells if cell in cellAtoms for m in cellAtoms[cell] if n < m])
             if all_neighbors.size == 0:
