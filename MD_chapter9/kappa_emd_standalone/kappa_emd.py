@@ -151,7 +151,7 @@ class Atom:
         self.forces = np.zeros((self.number, 3))
         self.hc = np.zeros(3) # initialize heat current
 
-        for i in range(self.number-1):
+        for i in range(self.number):
             neighbors = self.NeighborList[i, :self.NeighborNumber[i]]
             neighbors = neighbors[neighbors > i]
             rij = self.coords[neighbors] - self.coords[i]
@@ -242,7 +242,7 @@ def main():
 
     # initialize atom and LJ
     lj = LJParameters(cutoff=r_lj)
-    atom = Atom('1.xyz',cutoffNeighbor=r_neighbor,MaxNeighbor=100)
+    atom = Atom('1.xyz',cutoffNeighbor=r_neighbor,MaxNeighbor=200)
 
     # initialize velocities
     atom.initializeVelocities(T_0)

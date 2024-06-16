@@ -16,6 +16,7 @@ def timer(func):
 class Units:
     k_B: float = 8.617343e-5
     TIME_UNIT_CONVERSION: float = 1.018051e+1
+    KAPPA_UNIT_CONVERSION: float = 1.573769e+5
 
 class LJParameters:
     def __init__(self,epsilon: float = 1.032e-2,sigma: float = 3.405,cutoff: float = 9.0):
@@ -60,9 +61,6 @@ class Atom:
         self.cutoffNeighbor: float = cutoffNeighbor
         self.NeighborNumber: np.ndarray = np.zeros(self.number, dtype=int)
         self.NeighborList: np.ndarray = np.zeros((self.number, self.MaxNeighbor), dtype=int)
-
-        # msd and vacf calculation
-        self.coord_msd: np.ndarray = np.zeros((self.number, 3))
         
     
     def parseXyzFile(self, filename: str) -> tuple[int, np.ndarray, np.ndarray, np.ndarray]:
@@ -141,6 +139,7 @@ class Atom:
 
         # 调整速度
         self.velocities *= scalingFactor
+
     def applyPbc(self) -> None:
         '''
         应用周期性边界条件
@@ -149,9 +148,10 @@ class Atom:
         '''
         self.coords %= self.box
 
-    def getForce(self, lj: LJParameters) -> None:
+    def getForce(self, lj: LJParameters, Fe: float) -> None:
         self.pe =0.0
         self.forces = np.zeros((self.number, 3))
+        self.hc = np.zeros(3) # initialize heat current
 
         for i in range(self.number):
             neighbors = self.NeighborList[i, :self.NeighborNumber[i]]
@@ -173,10 +173,24 @@ class Atom:
             f_ij = lj.e24s6 * r8i - lj.e48s12*r14i
 
             self.pe += np.sum(lj.e4s12*r12i - lj.e4s6*r6i)
-            force = f_ij[:, np.newaxis] * rij
+            force_internal = f_ij[:, np.newaxis] * rij
 
-            np.add.at(self.forces, [i], np.sum(force, axis=0))
-            np.subtract.at(self.forces, neighbors[mask], force)
+            # calculate driving force
+            tmp = rij[:,0] * Fe * 0.5
+            force_external = force_internal * tmp[:, np.newaxis]
+
+            np.add.at(self.forces, [i], np.sum(force_internal - force_external, axis=0))
+            np.subtract.at(self.forces, neighbors[mask], force_internal + force_external)
+
+            # Heat current calculation
+            f_dot_v = np.sum(rij * (self.velocities[i] + self.velocities[neighbors[mask]]), axis=1) * f_ij * 0.5
+            head_current_contribution = rij * f_dot_v[:, np.newaxis]
+            self.hc -= np.sum(head_current_contribution, axis=0)
+
+        # correct total force
+        force_ave = np.sum(self.forces, axis=0) / self.number
+        self.forces -= force_ave
+
 
     def findNeighbor(self):
 
@@ -221,26 +235,25 @@ class Atom:
         # 完全更新坐标
         if isStepOne:
             self.coords += dt * self.velocities
-            self.coord_msd += self.velocities * dt
 
 def main():
 
     # constants
-    Ne, Np = 100000, 100000
-    Ns = 10
+    Ne, Np = 200000, 200000
+    Ns = 1000
     Nd = Np / Ns
     Nc = Nd/ 10
 
-    time_step = 10.0 / Units.TIME_UNIT_CONVERSION
-    T_0 = 1.475 * 119.8
+    time_step = 5.0 / Units.TIME_UNIT_CONVERSION
+    T_0 = 20
+    Fe = 0.001
 
-    r_neighbor = 15.0
-    neighbor_update_freq = 10
-    r_lj = 10.0
+    r_neighbor = 12.0
+    r_lj = 10.215
 
     # initialize atom and LJ
     lj = LJParameters(cutoff=r_lj)
-    atom = Atom('1.xyz',cutoffNeighbor=r_neighbor,MaxNeighbor=100)
+    atom = Atom('1.xyz',cutoffNeighbor=r_neighbor,MaxNeighbor=200)
 
     # initialize velocities
     atom.initializeVelocities(T_0)
@@ -248,39 +261,34 @@ def main():
     # equilibration
     t_start = time()
     atom.findNeighbor()
-    atom.getForce(lj)
-    for i in tqdm(range(Ne)):
-        if i % neighbor_update_freq == 0:
-            atom.findNeighbor()
+    atom.getForce(lj, Fe=0.0)
+    for i in tqdm(range(Ne)): 
         atom.update(True, time_step)
-        atom.getForce(lj)
+        atom.getForce(lj, Fe=0)
         atom.update(False, time_step)
         atom.scaleVelocities(T_0)
-        atom.applyPbc()
     t_end = time()
     print('Equilibration time: %.3f s' % (t_end - t_start))
     
     # production
-    coord_all = np.zeros((int(Nd), atom.number, 3))
-    vel_all = np.zeros((int(Nd), atom.number, 3))
+    hc_sum = np.zeros((int(Nd), 3))
+    dt_in_ps = time_step * Units.TIME_UNIT_CONVERSION / 1000.0
+    factor = Units.KAPPA_UNIT_CONVERSION / (T_0 * atom.box[0] * atom.box[1] * atom.box[2] * Fe)
+    f=open('my_kappa.txt','a')
     t_start = time()
     for i in tqdm(range(Np)):
-        if i % neighbor_update_freq == 0:
-            atom.findNeighbor()
         atom.update(True, time_step)
-        atom.getForce(lj)
+        atom.getForce(lj, Fe=Fe)
         atom.update(False, time_step)
-        atom.applyPbc()
+        atom.scaleVelocities(T_0)
+        hc_sum += atom.hc * factor
+        
+        if (i+1) % Ns == 0:
+            f.write(f"{(i+1) * dt_in_ps:.10e} {hc_sum[0]/Ns:.10e} {hc_sum[1]/Ns:.10e} {hc_sum[2]/Ns:.10e}\n")
+            hc_sum = np.zeros((int(Nd), 3))
 
-        if i % Ns == 0:
-            step = i // Ns
-            coord_all[step] = atom.coord_msd
-            vel_all[step] = atom.velocities
+    f.close()
     t_end = time()
     print('Production time: %.3f s' % (t_end - t_start))
-
-    # save data
-    np.save('coord.npy', coord_all)
-    np.save('vel.npy', vel_all)
 
 main()

@@ -1,7 +1,7 @@
 import numpy as np
 from time import time
 from tqdm import tqdm
-from joblib import dump
+from joblib import Parallel, delayed
 
 def timer(func):
     def func_wrapper(*args, **kwargs):
@@ -60,9 +60,6 @@ class Atom:
         self.cutoffNeighbor: float = cutoffNeighbor
         self.NeighborNumber: np.ndarray = np.zeros(self.number, dtype=int)
         self.NeighborList: np.ndarray = np.zeros((self.number, self.MaxNeighbor), dtype=int)
-
-        # msd and vacf calculation
-        self.coord_msd: np.ndarray = np.zeros((self.number, 3))
         
     
     def parseXyzFile(self, filename: str) -> tuple[int, np.ndarray, np.ndarray, np.ndarray]:
@@ -152,6 +149,7 @@ class Atom:
     def getForce(self, lj: LJParameters) -> None:
         self.pe =0.0
         self.forces = np.zeros((self.number, 3))
+        self.hc = np.zeros(3) # initialize heat current
 
         for i in range(self.number):
             neighbors = self.NeighborList[i, :self.NeighborNumber[i]]
@@ -177,6 +175,11 @@ class Atom:
 
             np.add.at(self.forces, [i], np.sum(force, axis=0))
             np.subtract.at(self.forces, neighbors[mask], force)
+
+            # Head current calculation
+            f_dot_v = np.sum(rij * (self.velocities[i] + self.velocities[neighbors[mask]]), axis=1) * f_ij * 0.5
+            head_current_contribution = rij * f_dot_v[:, np.newaxis]
+            self.hc -= np.sum(head_current_contribution, axis=0)
 
     def findNeighbor(self):
 
@@ -221,26 +224,24 @@ class Atom:
         # 完全更新坐标
         if isStepOne:
             self.coords += dt * self.velocities
-            self.coord_msd += self.velocities * dt
 
-def main():
-
+def run_one_simulation(idx):
+    print(idx)
     # constants
-    Ne, Np = 100000, 100000
+    Ne, Np = 20000, 20000
     Ns = 10
     Nd = Np / Ns
     Nc = Nd/ 10
 
     time_step = 10.0 / Units.TIME_UNIT_CONVERSION
-    T_0 = 1.475 * 119.8
+    T_0 = 60
 
-    r_neighbor = 15.0
-    neighbor_update_freq = 10
-    r_lj = 10.0
+    r_neighbor = 12.0
+    r_lj = 10.215
 
     # initialize atom and LJ
     lj = LJParameters(cutoff=r_lj)
-    atom = Atom('1.xyz',cutoffNeighbor=r_neighbor,MaxNeighbor=100)
+    atom = Atom('1.xyz',cutoffNeighbor=r_neighbor,MaxNeighbor=200)
 
     # initialize velocities
     atom.initializeVelocities(T_0)
@@ -250,37 +251,34 @@ def main():
     atom.findNeighbor()
     atom.getForce(lj)
     for i in tqdm(range(Ne)):
-        if i % neighbor_update_freq == 0:
-            atom.findNeighbor()
         atom.update(True, time_step)
         atom.getForce(lj)
         atom.update(False, time_step)
         atom.scaleVelocities(T_0)
-        atom.applyPbc()
     t_end = time()
     print('Equilibration time: %.3f s' % (t_end - t_start))
     
     # production
-    coord_all = np.zeros((int(Nd), atom.number, 3))
-    vel_all = np.zeros((int(Nd), atom.number, 3))
+    h = np.zeros((int(Nd), 3))
+    count = 0
     t_start = time()
     for i in tqdm(range(Np)):
-        if i % neighbor_update_freq == 0:
-            atom.findNeighbor()
         atom.update(True, time_step)
         atom.getForce(lj)
         atom.update(False, time_step)
-        atom.applyPbc()
-
         if i % Ns == 0:
-            step = i // Ns
-            coord_all[step] = atom.coord_msd
-            vel_all[step] = atom.velocities
+            h[count] = atom.hc.copy()
+            count += 1
+
     t_end = time()
     print('Production time: %.3f s' % (t_end - t_start))
 
     # save data
-    np.save('coord.npy', coord_all)
-    np.save('vel.npy', vel_all)
+    np.save(f'h{idx}.npy', h)
+    pass 
+
+def main():
+
+    Parallel(n_jobs=8)(delayed(run_one_simulation)(i) for i in range(49))
 
 main()
