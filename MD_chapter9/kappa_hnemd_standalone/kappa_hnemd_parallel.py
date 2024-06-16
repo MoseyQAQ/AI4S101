@@ -1,7 +1,7 @@
 import numpy as np
 from time import time
 from tqdm import tqdm
-from joblib import dump
+from joblib import Parallel, delayed
 
 def timer(func):
     def func_wrapper(*args, **kwargs):
@@ -191,7 +191,6 @@ class Atom:
         force_ave = np.sum(self.forces, axis=0) / self.number
         self.forces -= force_ave
 
-
     def findNeighbor(self):
 
         # reset neighbor list
@@ -236,8 +235,8 @@ class Atom:
         if isStepOne:
             self.coords += dt * self.velocities
 
-def main():
-
+def run_one_simulation(idx: int):
+    print(idx)
     # constants
     Ne, Np = 200000, 200000
     Ns = 1000
@@ -262,7 +261,7 @@ def main():
     t_start = time()
     atom.findNeighbor()
     atom.getForce(lj, Fe=0.0)
-    for i in tqdm(range(Ne)): 
+    for i in tqdm(range(Ne)):
         atom.update(True, time_step)
         atom.getForce(lj, Fe=0)
         atom.update(False, time_step)
@@ -271,10 +270,10 @@ def main():
     print('Equilibration time: %.3f s' % (t_end - t_start))
     
     # production
-    hc_sum = np.zeros((int(Nd), 3))
+    hc_sum = np.zeros(3)
     dt_in_ps = time_step * Units.TIME_UNIT_CONVERSION / 1000.0
     factor = Units.KAPPA_UNIT_CONVERSION / (T_0 * atom.box[0] * atom.box[1] * atom.box[2] * Fe)
-    f=open('my_kappa.txt','a')
+    f=open(f'my_kappa_{idx}.txt','a')
     t_start = time()
     for i in tqdm(range(Np)):
         atom.update(True, time_step)
@@ -285,10 +284,14 @@ def main():
         
         if (i+1) % Ns == 0:
             f.write(f"{(i+1) * dt_in_ps:.10e} {hc_sum[0]/Ns:.10e} {hc_sum[1]/Ns:.10e} {hc_sum[2]/Ns:.10e}\n")
-            hc_sum = np.zeros((int(Nd), 3))
+            hc_sum = np.zeros(3)
 
     f.close()
     t_end = time()
     print('Production time: %.3f s' % (t_end - t_start))
+
+def main():
+
+    Parallel(n_jobs=5)(delayed(run_one_simulation)(i) for i in range(5))
 
 main()
